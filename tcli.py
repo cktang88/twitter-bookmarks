@@ -62,3 +62,28 @@ def fetch_bookmarks(max_count: int = 800) -> list[dict]:
 
 def unbookmark(tweet_id: str) -> None:
     _run(["unbookmark", str(tweet_id)])
+
+
+def fetch_tweet(tweet_id: str) -> dict | None:
+    """Fetch a single tweet's full data (media, urls, quotedTweet). Returns
+    the tweet dict or None if the payload was unexpected. `twitter tweet <id>`
+    returns [root, reply1, ...]; we only want the root."""
+    raw = _run(["tweet", str(tweet_id), "--max", "0", "--json"])
+    payload = json.loads(raw)
+
+    if isinstance(payload, dict):
+        if payload.get("ok") is False:
+            err = payload.get("error") or {}
+            raise TwitterCliError(
+                f"twitter-cli error fetching tweet {tweet_id}: "
+                f"{err.get('code')} — {err.get('message')}"
+            )
+        data = payload.get("data")
+    else:
+        data = payload
+
+    if isinstance(data, list) and data:
+        return data[0] if isinstance(data[0], dict) else None
+    if isinstance(data, dict):
+        return data
+    return None

@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 import extract
 import llm
 import media as media_mod
+import quotes
 import tcli
 from state import (
     BOOKMARKS_DIR,
@@ -134,7 +135,15 @@ def main() -> int:
 
         print(prefix)
 
-        # 1. Thread classification
+        # 1. Quote-tweet chain (recursive, bounded, idempotent).
+        # Done before thread classification so `bm.quoted` is a valid
+        # self-contained signal for the heuristic shortcut in llm.classify_thread.
+        if quotes.resolve_for_bookmark(bm.quoted, tweet):
+            n = sum(1 for _ in quotes.walk(bm.quoted))
+            print(f"  resolved quoted chain ({n} tweet(s))")
+            bm.save()
+
+        # 2. Thread classification
         if bm.is_thread is None:
             try:
                 is_thread, reason = llm.classify_thread(bm)
@@ -150,14 +159,14 @@ def main() -> int:
             if is_thread:
                 continue
 
-        # 2. Photo downloads
+        # 3. Photo downloads
         if any(m.type == "photo" and not m.local_path for m in bm.media):
             n = sum(1 for m in bm.media if m.type == "photo")
             print(f"  downloading {n} photo(s)...")
             media_mod.download_photos(bm.id, bm.media)
             bm.save()
 
-        # 3. Article extraction (idempotent per URL)
+        # 4. Article extraction (idempotent per URL)
         done_urls = {a.url for a in bm.articles}
         new_urls = [u for u in bm.urls if u not in done_urls]
         for url in new_urls:

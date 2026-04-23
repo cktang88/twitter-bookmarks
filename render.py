@@ -6,7 +6,7 @@ import shutil
 from collections import defaultdict
 from pathlib import Path
 
-from state import BookmarkState
+from state import BookmarkState, QuotedTweet
 
 _SLUG_RX = re.compile(r"[^a-z0-9]+")
 
@@ -82,6 +82,54 @@ def _related(bm: BookmarkState, all_bms: list[BookmarkState], max_n: int = 5) ->
     return [o for _, o in scored[:max_n]]
 
 
+def _render_quoted(q: QuotedTweet, depth: int) -> list[str]:
+    """Render a quoted tweet (and any nested quotes) as markdown lines.
+    `depth` controls the heading level: 1 → `## Quoted Tweet`,
+    2 → `### Quote-of-Quote`, etc."""
+    heading_prefix = "#" * min(depth + 1, 6)
+    label = "Quoted Tweet" if depth == 1 else f"Quoted Tweet (depth {depth})"
+    header = f"{heading_prefix} {label} — @{q.author_username}"
+    if q.tweet_url:
+        header = f"{heading_prefix} [{label} — @{q.author_username}]({q.tweet_url})"
+
+    lines: list[str] = [header, ""]
+    if q.fetch_error:
+        lines.append(f"_Could not fully fetch this quote: {q.fetch_error}_")
+        lines.append("")
+    for line in (q.text or "").splitlines():
+        lines.append(f"> {line}" if line else ">")
+    lines.append("")
+
+    videos = [m for m in q.media if m.type in ("video", "animated_gif")]
+    if videos:
+        lines.append("**Videos:**")
+        for v in videos:
+            lines.append(f"- <{v.url}>")
+        lines.append("")
+
+    photos = [m for m in q.media if m.type == "photo" and m.url]
+    if photos:
+        lines.append("**Images:** " + " ".join(f"<{m.url}>" for m in photos))
+        lines.append("")
+
+    for a in q.articles:
+        lines.append(f"**Linked:** [{a.title or a.url}]({a.url})")
+        if a.ok:
+            snippet = a.text[:600].strip()
+            if len(a.text) > 600:
+                snippet += "..."
+            lines.append("")
+            lines.append(snippet)
+        elif a.error:
+            lines.append(f"_Could not extract: {a.error}_")
+        lines.append("")
+
+    for child in q.quoted:
+        lines.extend(_render_quoted(child, depth + 1))
+
+    return lines
+
+
 def _render_note(bm: BookmarkState, related: list[BookmarkState], attachments: list[tuple[str, Path]]) -> str:
     lines: list[str] = []
     lines.append(f"# {_title(bm)}")
@@ -113,6 +161,9 @@ def _render_note(bm: BookmarkState, related: list[BookmarkState], attachments: l
     for line in (bm.text or "").splitlines():
         lines.append(f"> {line}" if line else ">")
     lines.append("")
+
+    for q in bm.quoted:
+        lines.extend(_render_quoted(q, depth=1))
 
     if attachments:
         lines.append("## Images")

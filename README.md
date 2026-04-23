@@ -7,12 +7,22 @@ Two stages, both **idempotent** — rerunning either one picks up where it left 
 ## Architecture
 
 ```
-fetch.py   →  .cache/bookmarks/<id>.json   (raw tweet + classification + articles + media)
+fetch.py   →  .cache/bookmarks/<id>.json   (raw tweet + quoted chain + classification + articles + media)
 organize.py →  notes/<Primary>/<Sub>/*.md  (summary + clustering + wikilinks)  +  X un-bookmark
 ```
 
+Per-bookmark pipeline in `fetch.py` (each step idempotent, resumable):
+
+1. **Quote-tweet chain** — resolve `quotedTweet` stub → full payload, recurse into nested quotes (depth-bounded, cycle-guarded). Each quoted node gets its own photo + article enrichment.
+2. **Thread classification** — heuristics + LLM fallback; threads are skipped.
+3. **Photo downloads** — top-level media.
+4. **Article extraction** — external links only (twitter.com / x.com URLs captured structurally via step 1).
+
+Modules: `tcli.py` (twitter-cli wrapper), `quotes.py` (recursive resolver), `state.py` (persisted dataclasses), `extract.py` (trafilatura), `media.py` (photo downloads), `llm.py` (OpenRouter), `render.py` (Obsidian vault).
+
 - **Scraping / unbookmarking** — delegated to [`twitter-cli`](https://github.com/public-clis/twitter-cli), which logs in via your browser cookies. No X developer portal, no OAuth, no API keys.
 - **Thread detection** — cheap heuristics first, then `gpt-5.4-nano` for the ambiguous ones. Threads are skipped (not rendered, not un-bookmarked).
+- **Quote tweets** — the bookmarks endpoint only returns a shallow stub (id, text, author) for quoted tweets, so each one is re-fetched via `twitter tweet <id>` to get its media, urls, and any nested `quotedTweet`. Recursion is bounded (depth 3) and cycle-guarded; every node gets the same photo-download + article-extraction treatment as the top-level bookmark, so summaries see the full chain.
 - **Article extraction** — `trafilatura` with precision mode, falling back to recall mode for short articles (Mastodon posts, changelogs, GitHub issues).
 - **Media** — photos are downloaded and embedded in the note; videos/GIFs kept as links.
 - **Summarization** — `gpt-5.4-mini` per bookmark.
@@ -61,6 +71,7 @@ Edit `.env`:
 - `EMBEDDING_MODEL` — any [fastembed-supported](https://qdrant.github.io/fastembed/examples/Supported_Models/) model, e.g. `nomic-ai/nomic-embed-text-v1.5`, `BAAI/bge-base-en-v1.5`
 - `CLUSTER_PRIMARY_THRESHOLD` / `CLUSTER_SUB_THRESHOLD` — lower = more folders, tighter groups
 - `MAX_BOOKMARKS` — cap for the twitter-cli fetch (default 800; X returns the most recent 800 anyway)
+- Quote-tweet recursion depth is hard-coded to 3 in `quotes.MAX_DEPTH` — edit there if you want deeper chains (each extra level costs 1 `twitter tweet` call + N article fetches per bookmark)
 - `UNBOOKMARK_AFTER_RENDER=0` — keep your X bookmarks in place
 
 Force-redo steps by deleting state:

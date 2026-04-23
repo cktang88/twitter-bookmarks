@@ -31,6 +31,33 @@ class ArticleData:
 
 
 @dataclass
+class QuotedTweet:
+    """A tweet referenced by a bookmark via quote-tweet. Recursive: a quoted
+    tweet may itself quote another tweet."""
+    id: str
+    text: str = ""
+    tweet_url: str = ""
+    author_username: str = ""
+    author_name: str = ""
+    created_at: str = ""
+    lang: str = ""
+    urls: list[str] = field(default_factory=list)
+    media: list[MediaItem] = field(default_factory=list)
+    articles: list[ArticleData] = field(default_factory=list)
+    quoted: list["QuotedTweet"] = field(default_factory=list)
+    fetch_error: str = ""  # set when tcli.fetch_tweet failed; rest of fields may be stub-only
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "QuotedTweet":
+        d = dict(d)
+        d["media"] = [MediaItem(**m) for m in d.get("media") or []]
+        d["articles"] = [ArticleData(**a) for a in d.get("articles") or []]
+        d["quoted"] = [cls.from_dict(q) for q in d.get("quoted") or []]
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in d.items() if k in known})
+
+
+@dataclass
 class BookmarkState:
     id: str
     text: str = ""
@@ -41,6 +68,7 @@ class BookmarkState:
     lang: str = ""
     urls: list[str] = field(default_factory=list)
     media: list[MediaItem] = field(default_factory=list)
+    quoted: list[QuotedTweet] = field(default_factory=list)
 
     # Stage 1 enrichment
     is_thread: bool | None = None
@@ -75,6 +103,7 @@ class BookmarkState:
         d = dict(d)
         d["media"] = [MediaItem(**m) for m in d.get("media") or []]
         d["articles"] = [ArticleData(**a) for a in d.get("articles") or []]
+        d["quoted"] = [QuotedTweet.from_dict(q) for q in d.get("quoted") or []]
         known = {f for f in cls.__dataclass_fields__}
         d = {k: v for k, v in d.items() if k in known}
         return cls(**d)

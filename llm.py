@@ -8,7 +8,7 @@ import re
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from state import ArticleData, BookmarkState
+from state import ArticleData, BookmarkState, QuotedTweet
 
 
 # ---------- client ----------
@@ -84,8 +84,8 @@ def classify_thread(bm: BookmarkState) -> tuple[bool, str]:
     text = bm.text.strip()
     if not text:
         return False, "empty text; treated as self-contained"
-    if bm.urls or bm.media or len(text) >= 300:
-        return False, "has links/media or long body"
+    if bm.urls or bm.media or bm.quoted or len(text) >= 300:
+        return False, "has links/media/quote or long body"
 
     user = f"TWEET by @{bm.author_username}:\n\n{text}"
     data = _json_call(_nano_model(), _THREAD_SYSTEM, user, temperature=0.0)
@@ -114,22 +114,54 @@ def _article_block(i: int, a: ArticleData) -> str:
     return f"{header}\n(could not extract: {a.error})"
 
 
+def _media_summary_line(media: list) -> str | None:
+    photo = sum(1 for m in media if m.type == "photo")
+    video = sum(1 for m in media if m.type in ("video", "animated_gif"))
+    if not (photo or video):
+        return None
+    return f"(ATTACHED MEDIA: {photo} photo(s), {video} video(s)/gif(s))"
+
+
+def _quoted_block(q: QuotedTweet, depth: int) -> list[str]:
+    """Flatten a quoted tweet (and any nested quotes) into prompt lines.
+    `depth` is 1 for the bookmark's direct quote, 2 for a quote-of-a-quote, etc."""
+    label = f"QUOTED TWEET (depth {depth})"
+    lines = [
+        f"--- {label} by @{q.author_username} ({q.author_name}) ---",
+        q.text or "(no text)",
+    ]
+    media_line = _media_summary_line(q.media)
+    if media_line:
+        lines.append(media_line)
+    for i, a in enumerate(q.articles, 1):
+        lines.append("")
+        lines.append(_article_block(i, a))
+    if q.fetch_error:
+        lines.append(f"(note: could not fully fetch this quote — {q.fetch_error})")
+    for child in q.quoted:
+        lines.append("")
+        lines.extend(_quoted_block(child, depth + 1))
+    return lines
+
+
 def _summary_prompt(bm: BookmarkState) -> str:
     parts = [
         f"TWEET by @{bm.author_username} ({bm.author_name}) at {bm.created_at}:",
         bm.text or "(no text)",
         "",
     ]
-    photo_count = sum(1 for m in bm.media if m.type == "photo")
-    video_count = sum(1 for m in bm.media if m.type in ("video", "animated_gif"))
-    if photo_count or video_count:
-        parts.append(f"(ATTACHED MEDIA: {photo_count} photo(s), {video_count} video(s)/gif(s))")
+    media_line = _media_summary_line(bm.media)
+    if media_line:
+        parts.append(media_line)
+        parts.append("")
+    for q in bm.quoted:
+        parts.extend(_quoted_block(q, depth=1))
         parts.append("")
     if bm.articles:
         for i, a in enumerate(bm.articles, 1):
             parts.append(_article_block(i, a))
             parts.append("")
-    else:
+    elif not bm.quoted:
         parts.append("(no external articles linked)")
     parts.append(
         "Return JSON with keys: tl_dr (string), key_points (list of strings), tags (list of lowercase strings)."
